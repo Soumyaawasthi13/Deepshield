@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>DeepShield Dashboard</title>
+  <style>
+    :root {
+      --bg: #f7f9fc;
+      --fg: #111;
+      --muted: #555;
+      --card: #ffffff;
+      --border: #e3e8ef;
+      --accent: #3b82f6;
+      --accent-2: #10b981;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.06);
+      --chip: #eef2ff;
+    }
+    body.dark {
+      --bg: #0f172a;
+      --fg: #e5e7eb;
+      --muted: #94a3b8;
+      --card: #111827;
+      --border: #1f2937;
+      --accent: #60a5fa;
+      --accent-2: #34d399;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 24px rgba(0,0,0,.3);
+      --chip: #1e293b;
+    }
+
+    html, body { height: 100%; }
+    body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; color: var(--fg); background: var(--bg); }
+
+    .container { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+    h1 { display: flex; align-items: center; gap: 10px; margin: 0 0 16px; font-size: 24px; }
+    .sub { color: var(--muted); font-size: 13px; }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 16px; }
+    .card h2 { margin: 0 0 12px; display: flex; align-items: center; gap: 8px; font-size: 18px; }
+
+    label { display:block; margin: 10px 0 6px; font-weight:600; }
+    input[type="text"], input[type="password"], input[type="number"], input[type="range"], select, textarea {
+      width: 100%; padding:10px; border:1px solid var(--border); border-radius:8px; background:transparent; color: var(--fg);
+    }
+    textarea { min-height: 84px; resize: vertical; }
+    .field-row { display:flex; align-items:center; gap:8px; }
+    .help { font-size:12px; color: var(--muted); margin-top: 4px; }
+
+    .btn-row { display:flex; justify-content:flex-end; gap:10px; margin-top: 12px; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid transparent; background: var(--border); color: var(--fg); cursor:pointer; }
+    .btn.primary { background: var(--accent); color: #fff; }
+    .btn.secondary { background: transparent; border-color: var(--border); }
+    .btn.danger { background: var(--danger); color: #fff; }
+    .btn.small { padding:6px 8px; font-size: 12px; }
+
+    .status { font-size: 12px; padding: 2px 8px; border-radius: 999px; display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); }
+    .status.ok { background: rgba(16,185,129,.1); color: var(--accent-2); border-color: rgba(16,185,129,.3); }
+    .status.warn { background: rgba(245,158,11,.1); color: var(--warn); border-color: rgba(245,158,11,.3); }
+    .status.err { background: rgba(239,68,68,.1); color: var(--danger); border-color: rgba(239,68,68,.3); }
+
+    .chip { display:inline-block; background: var(--chip); color: var(--fg); padding:2px 8px; border-radius: 999px; font-size: 12px; border:1px solid var(--border); }
+
+    .lastscan { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 700px) { .lastscan { grid-template-columns: 1fr; } }
+
+    .badge { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; font-weight:600; }
+    .badge.green { background: rgba(16,185,129,.15); color: var(--accent-2); }
+    .badge.yellow { background: rgba(245,158,11,.15); color: var(--warn); }
+    .badge.red { background: rgba(239,68,68,.15); color: var(--danger); }
+
+    .kv { display:grid; grid-template-columns: 120px 1fr; gap:8px; font-size: 14px; }
+    .kv div { padding:4px 0; }
+
+    .logs { display:flex; flex-direction: column; gap: 12px; }
+    .log-item { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px; box-shadow: var(--shadow); }
+    .log-head { display:flex; justify-content: space-between; align-items:center; gap: 10px; }
+    .log-text { margin-top: 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .highlight { background: rgba(255, 230, 0, .35); color: #c2410c; font-weight: 600; }
+
+    .toolbar { display:flex; align-items:center; gap: 12px; justify-content: flex-end; margin-bottom: 10px; }
+
+    /* Toast */
+    #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--card); color: var(--fg); border:1px solid var(--border); box-shadow: var(--shadow); padding:10px 14px; border-radius: 8px; opacity:0; pointer-events:none; transition: opacity .25s ease; }
+    #toast.show { opacity: 1; }
+  .label-chip { display:inline-block; padding:2px 8px; border-radius:999px; font-weight:700; }
+    .label-green { background: rgba(16,185,129,.15); color: var(--accent-2); }
+    .label-yellow { background: rgba(245,158,11,.15); color: var(--warn); }
+    .label-red { background: rgba(239,68,68,.15); color: var(--danger); }
+
+    .emph-result { font-size: 18px; font-weight: 700; margin-top: 8px; padding: 8px 10px; border-radius: 8px; display:inline-block; }
+    .emph-green { background: rgba(16,185,129,.15); color: var(--accent-2); }
+    .emph-yellow { background: rgba(245,158,11,.15); color: var(--warn); }
+    .emph-red { background: rgba(239,68,68,.15); color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🤖 DeepShield Dashboard <span class="sub">Detect AI-generated text in real-time</span></h1>
+
+    <div class="row">
+      <div class="card">
+        <h2>⚙️ API Settings</h2>
+
+        <label for="hf-token">Hugging Face API Token</label>
+        <div class="field-row">
+          <input id="hf-token" type="password" placeholder="hf_xxx..." autocomplete="off" />
+          <button id="toggle-token" class="btn small" title="Show/Hide">👁️</button>
+          <button id="check-token" class="btn small" title="Validate token">Check</button>
+          <span id="token-status" class="status">Not checked</span>
+        </div>
+        <div class="help">Stored locally; used for Authorization header to Hugging Face Inference API.</div>
+
+        <div class="btn-row">
+          <button id="save-settings" class="btn primary">Save Settings</button>
+          <button id="clear-token" class="btn secondary">Clear Token</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>🧠 Model Settings</h2>
+
+        <label for="model-id">Model ID</label>
+        <input id="model-id" type="text" list="model-list" placeholder="e.g., facebook/bart-large-mnli" />
+        <datalist id="model-list">
+          <option value="facebook/bart-large-mnli" label="Zero-shot (reliable free)" />
+          <option value="Hello-SimpleAI/chatgpt-detector-roberta" label="ChatGPT detector (may be rate-limited)" />
+          <option value="roberta-base-openai-detector" label="OpenAI detector (legacy)" />
+          <option value="openai-community/roberta-base-openai-detector" label="OpenAI community mirror" />
+          <option value="desklib/ai-text-detector-v1.01" label="Community detector" />
+          <option value="SuperAnnotate/ai-detector" label="Community detector" />
+        </datalist>
+        <div class="help">Choose a model or leave blank to try sensible fallbacks automatically.</div>
+
+        <label for="threshold-slider">Decision Threshold</label>
+        <input id="threshold-slider" type="range" min="0" max="1" step="0.01" />
+        <div class="field-row">
+          <span class="chip">Value: <b id="threshold-value">0.6</b></span>
+          <span class="help">0.3 = lenient · 0.8 = stricter</span>
+        </div>
+
+        <div style="margin-top:8px; display:flex; align-items:center; gap: 10px;">
+          <label for="realtime-toggle" style="margin:0;">Real-time detection</label>
+          <input id="realtime-toggle" type="checkbox" />
+          <span class="help">If off, content pages won't auto-scan.</span>
+        </div>
+
+        <div style="margin-top:8px; display:flex; align-items:center; gap: 10px;">
+          <label for="theme-toggle" style="margin:0;">Dark mode</label>
+          <input id="theme-toggle" type="checkbox" />
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:16px;">
+      <div class="card">
+        <h2>🔎 Scan Results</h2>
+        <div class="lastscan">
+          <div>
+            <div id="scan-status" class="badge">No recent scan</div>
+            <div class="kv" style="margin-top:10px;">
+              <div>Score</div><div id="scan-score">—</div>
+              <div>Label</div><div id="scan-label">—</div>
+              <div>Model</div><div id="scan-model">—</div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <h3 style="margin:0 0 8px;">🖼️ Last Image Scan</h3>
+              <div id="img-status" class="badge">No image scan</div>
+              <div class="kv">
+                <div>Score</div><div id="img-score">—</div>
+                <div>Label</div><div id="img-label">—</div>
+                <div>Model</div><div id="img-model">—</div>
+                <div>Image</div><div id="img-url" class="help" style="overflow-wrap:anywhere;">—</div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label for="quick-input">Quick Test (Text)</label>
+            <textarea id="quick-input" placeholder="Paste text here to test AI detection (max 1000 chars)"></textarea>
+            <div class="btn-row">
+              <button id="run-test" class="btn">Run Test</button>
+            </div>
+            <div id="quick-result" class="help"></div>
+
+            <div style="height:12px;"></div>
+            <label for="img-file">Manual Image Upload</label>
+            <input id="img-file" type="file" accept="image/*" />
+            <div class="field-row" style="margin-top:8px; align-items:flex-start;">
+              <img id="img-preview" alt="preview" style="max-width:100%; max-height:200px; display:none; border:1px solid var(--border); border-radius:8px;" />
+            </div>
+            <div class="btn-row">
+              <button id="run-image" class="btn">Analyze Image</button>
+              <button id="download-img-report" class="btn secondary">Download Report</button>
+            </div>
+            <div id="img-result" class="emph-result"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>📄 Flagged AI Text</h2>
+        <div class="toolbar">
+          <button id="export-json" class="btn small">Export JSON</button>
+          <button id="export-csv" class="btn small">Export CSV</button>
+        </div>
+        <div id="log-list" class="logs"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast">Saved</div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
