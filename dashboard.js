@@ -24,6 +24,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     logList: document.getElementById("log-list"),
     toast: document.getElementById("toast"),
+    sites: document.getElementById("sites"),
+    clearSites: document.getElementById("clear-sites"),
   };
 
   // UI helpers
@@ -56,7 +58,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Load existing settings & state
   chrome.storage.local.get([
-    "hf_token", "model_id", "threshold", "logs", "last_scan", "flaggedText", "realtime", "theme", "last_image_scan"
+    "hf_token", "model_id", "threshold", "logs", "last_scan", "flaggedText", "realtime", "theme", "last_image_scan", "site_visits"
   ], (data) => {
     if (els.token && typeof data.hf_token === "string") els.token.value = data.hf_token;
     if (els.model && typeof data.model_id === "string") els.model.value = data.model_id;
@@ -126,6 +128,10 @@ document.addEventListener("DOMContentLoaded", () => {
     // Logs
     const logs = Array.isArray(data.logs) ? data.logs : [];
     renderLogs(logs);
+
+    // Sites
+    const sites = Array.isArray(data.site_visits) ? data.site_visits : [];
+    renderSites(sites);
   });
 
   function renderLogs(logs) {
@@ -138,6 +144,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <div class="chip">${entry.date || ''}</div>
           <div>
             <button class="btn small" data-copy="${idx}">Copy</button>
+            <button class="btn small danger" data-delete-log="${idx}">Delete</button>
           </div>
         </div>
         <div class="log-text" id="log-${idx}"></div>
@@ -148,6 +155,28 @@ document.addEventListener("DOMContentLoaded", () => {
       // Simple highlight of suspicious phrases
       const phrases = /(chatgpt|as an ai|language model|in conclusion|furthermore|moreover)/gi;
       textEl.innerHTML = text.replace(phrases, (m) => `<span class="highlight">${m}</span>`);
+    });
+  }
+
+  function renderSites(sites) {
+    if (!els.sites) return;
+    els.sites.innerHTML = '';
+    sites.slice().reverse().forEach((s) => {
+      const row = document.createElement('div');
+      row.className = 'site-item';
+      const score = typeof s.score === 'number' ? s.score : NaN;
+      const badgeClass = !Number.isFinite(score) ? '' : (score < 0.3 ? 'green' : score <= 0.7 ? 'yellow' : 'red');
+      const badgeText = !Number.isFinite(score) ? '—' : (score < 0.3 ? '🟢 Human' : score <= 0.7 ? '🟡 Uncertain' : '🔴 AI');
+      row.innerHTML = `
+        <div class="site-meta">
+          <div class="site-title">${(s.title || s.url || '').replace(/</g,'&lt;')}</div>
+          <div class="site-url">${(s.url || '').replace(/</g,'&lt;')}</div>
+          <div class="help">${s.date || ''}</div>
+        </div>
+        <div>
+          <span class="badge ${badgeClass}">${badgeText}</span>
+        </div>`;
+      els.sites.appendChild(row);
     });
   }
 
@@ -338,13 +367,41 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Copy buttons delegation
+  if (els.clearSites) {
+    els.clearSites.addEventListener('click', () => {
+      chrome.storage.local.remove(['site_visits'], () => {
+        renderSites([]);
+        toast('Cleared site activity');
+      });
+    });
+  }
+
+  // Copy/Delete buttons delegation
   els.logList.addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-copy]');
-    if (!btn) return;
-    const idx = btn.getAttribute('data-copy');
-    const el = document.getElementById(`log-${idx}`);
-    const text = el ? el.textContent : '';
-    navigator.clipboard.writeText(text).then(() => toast('Copied'));
+    const copyBtn = e.target.closest('button[data-copy]');
+    const delBtn = e.target.closest('button[data-delete-log]');
+
+    if (copyBtn) {
+      const idx = Number(copyBtn.getAttribute('data-copy'));
+      const el = document.getElementById(`log-${idx}`);
+      const text = el ? el.textContent : '';
+      navigator.clipboard.writeText(text).then(() => toast('Copied'));
+      return;
+    }
+
+    if (delBtn) {
+      const idx = Number(delBtn.getAttribute('data-delete-log'));
+      chrome.storage.local.get(['logs'], (data) => {
+        const logs = Array.isArray(data.logs) ? data.logs : [];
+        if (idx >= 0 && idx < logs.length) {
+          logs.splice(idx, 1);
+          chrome.storage.local.set({ logs }, () => {
+            renderLogs(logs);
+            toast('Deleted');
+          });
+        }
+      });
+      return;
+    }
   });
 });

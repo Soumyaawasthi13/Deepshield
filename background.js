@@ -3,10 +3,10 @@
 // ======= Model configuration =======
 const DEFAULT_MODELS = [
   'Hello-SimpleAI/chatgpt-detector-roberta',
+  'openai-community/roberta-base-openai-detector',
   'roberta-base-openai-detector',
   'desklib/ai-text-detector-v1.01',
-  'SuperAnnotate/ai-detector',
-  'openai-community/roberta-base-openai-detector'
+  'SuperAnnotate/ai-detector'
 ];
 
 const ZERO_SHOT_FALLBACK_MODEL = 'facebook/bart-large-mnli';
@@ -27,26 +27,43 @@ const IMAGE_LABELS = [
   'real'
 ];
 
+// ======= Tunables for accuracy/perf =======
+const CHUNK_SIZE = 800;           // characters per chunk
+const MAX_CHUNKS = 3;             // at most this many chunks per page
+const MAX_DETECTOR_MODELS = 2;    // number of detector models to ensemble (plus zero-shot)
+
 // ======= Message router =======
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) return;
 
   if (msg.type === 'scan_text') {
-    const textToScan = (msg.payload || '').toString().slice(0, 1000);
+    // Accept up to 4000 chars for better context
+    const rawText = (msg.payload || '').toString();
+    const textToScan = rawText.slice(0, 4000);
     if (!textToScan.trim()) {
       sendResponse({ isAI: false, reason: 'empty_text' });
-      return; }
+      return;
+    }
 
-    analyzeText(textToScan)
+    const meta = {
+      url: (msg.meta && msg.meta.url) || sender?.url || sender?.tab?.url || '',
+      title: (msg.meta && msg.meta.title) || sender?.tab?.title || ''
+    };
+
+    analyzeTextEnsemble(textToScan)
       .then(async (result) => {
         await saveLastScan(textToScan, result).catch(() => {});
+        // Keep legacy log of flagged text only when AI
         if (result.isAI) await logToStorage(textToScan).catch(() => {});
+        // Always log the site visit with classification
+        if (meta.url) await logSiteVisit(meta.url, meta.title, result).catch(() => {});
         sendResponse(result);
       })
       .catch(async (err) => {
         const errorMsg = err?.message || String(err);
         console.error('DeepShield: inference error:', errorMsg);
         await saveLastScan(textToScan, { isAI: false, error: errorMsg }).catch(() => {});
+        if (meta.url) await logSiteVisit(meta.url, meta.title, { isAI: false, score: 0, label: 'error', model: 'n/a' }).catch(() => {});
         sendResponse({ isAI: false, error: errorMsg });
       });
     return true; // async
@@ -73,54 +90,73 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// ======= Text analysis =======
-async function analyzeText(text) {
+// ======= Text analysis (ensemble) =======
+function chunkText(t, size = CHUNK_SIZE, maxChunks = MAX_CHUNKS) {
+  const s = String(t || '');
+  const out = [];
+  for (let i = 0; i < s.length && out.length < maxChunks; i += size) out.push(s.slice(i, i + size));
+  return out.length ? out : [''];
+}
+
+async function analyzeTextEnsemble(text) {
   const { token, threshold, model_id } = await getSettings();
   const decisionThreshold = typeof threshold === 'number' ? threshold : 0.6;
 
-  const modelsToTry = [];
-  if (model_id && typeof model_id === 'string' && model_id.trim()) modelsToTry.push(model_id.trim());
-  for (const m of DEFAULT_MODELS) if (!modelsToTry.includes(m)) modelsToTry.push(m);
+  // Build model pool: a couple of detector models + always include zero-shot
+  const pool = [];
+  if (model_id && typeof model_id === 'string' && model_id.trim()) pool.push(model_id.trim());
+  for (const m of DEFAULT_MODELS) if (!pool.includes(m)) pool.push(m);
 
-  let lastError = null;
-  for (const model of modelsToTry) {
-    try {
-      const result = isZeroShotModel(model)
-        ? await callZeroShot(text, token)
-        : await callInference(model, text, token);
-      const { predictions, raw, status } = result;
-      console.log('DeepShield: raw response:', raw);
-      const normalized = normalizePredictions(predictions);
-      const { aiScore, aiLabel, best } = decideAIScore(normalized);
-      const isAI = aiScore >= decisionThreshold;
-      return { isAI, label: aiLabel || best?.label, score: aiScore, predictions: normalized, model, status };
-    } catch (e) {
-      const msg = e?.message || String(e);
-      lastError = msg;
-      if (/HTTP\s*(400|401|403|404|429|503)/i.test(msg) || /not\s*found/i.test(msg) || /loading/i.test(msg)) {
-        console.warn(`DeepShield: model '${model}' failed (${msg}). Trying next...`);
+  const detectors = pool.filter(m => !isZeroShotModel(m));
+  const useDetectors = detectors.slice(0, MAX_DETECTOR_MODELS);
+  const modelsToRun = [...useDetectors, ZERO_SHOT_FALLBACK_MODEL];
+
+  const chunks = chunkText(text);
+
+  const perModel = [];
+  const aiScores = [];
+  const labelScores = new Map(); // label -> cumulative score
+
+  for (const model of modelsToRun) {
+    for (const ch of chunks) {
+      try {
+        const result = isZeroShotModel(model)
+          ? await callZeroShot(ch, token)
+          : await callInference(model, ch, token);
+        const normalized = normalizePredictions(result.predictions);
+        const { aiScore, aiLabel, best } = decideAIScore(normalized);
+        aiScores.push(aiScore);
+        const lbl = aiLabel || best?.label || '';
+        if (lbl) labelScores.set(lbl, (labelScores.get(lbl) || 0) + aiScore);
+        perModel.push({ model, chunkLen: ch.length, aiScore, label: lbl });
+      } catch (e) {
+        const msg = e?.message || String(e);
+        console.warn(`DeepShield: model '${model}' chunk failed:`, msg);
+        // skip this chunk/model
         continue;
       }
-      throw e;
     }
   }
 
-  // Zero-shot fallback then heuristic
-  try {
-    const { predictions, raw } = await callZeroShot(text, token);
-    console.log('DeepShield: zero-shot raw response:', raw);
-    const normalized = normalizePredictions(predictions);
-    const { aiScore, aiLabel, best } = decideAIScore(normalized);
-    const isAI = aiScore >= decisionThreshold;
-    return { isAI, label: aiLabel || best?.label, score: aiScore, predictions: normalized, model: ZERO_SHOT_FALLBACK_MODEL, status: 200 };
-  } catch (e2) {
-    console.warn('DeepShield: zero-shot fallback failed:', e2?.message || e2);
+  if (!aiScores.length) {
+    // All models failed -> heuristic
     const preds = heuristicPredict(text);
     const normalized = normalizePredictions(preds);
     const { aiScore, aiLabel, best } = decideAIScore(normalized);
     const isAI = aiScore >= decisionThreshold;
-    return { isAI, label: aiLabel || best?.label, score: aiScore, predictions: normalized, model: 'heuristic-local', status: 200 };
+    return { isAI, label: aiLabel || best?.label, score: aiScore, predictions: normalized, model: 'heuristic-local', status: 200, perModel };
   }
+
+  // Aggregate
+  const finalScore = aiScores.reduce((a, b) => a + b, 0) / aiScores.length;
+  // Pick label with highest cumulative score
+  let finalLabel = 'AI';
+  if (labelScores.size) {
+    finalLabel = Array.from(labelScores.entries()).sort((a, b) => b[1] - a[1])[0][0];
+  }
+  const isAI = finalScore >= decisionThreshold;
+
+  return { isAI, label: finalLabel, score: finalScore, model: modelsToRun.join(' + '), status: 200, perModel };
 }
 
 async function callInference(model, text, token) {
@@ -264,7 +300,7 @@ function decideAIScore(predictions) {
   const byLabel = (name) => predictions.find(p => p.label.toLowerCase() === name.toLowerCase());
   const match = (re) => predictions.filter(p => re.test(p.label.toLowerCase()));
 
-  const aiCandidates = match(/fake|ai|gpt|generated|deepfake/);
+  const aiCandidates = match(/fake|ai|gpt|generated|deepfake|machine|synthetic/);
   if (aiCandidates.length) {
     const aiBest = aiCandidates.reduce((a, b) => (a.score || 0) > (b.score || 0) ? a : b);
     return { aiScore: aiBest.score || 0, aiLabel: aiBest.label, best };
@@ -274,7 +310,7 @@ function decideAIScore(predictions) {
   if (lbl1) return { aiScore: lbl1.score || 0, aiLabel: 'LABEL_1', best };
   if (lbl0) return { aiScore: 1 - (lbl0.score || 0), aiLabel: 'not LABEL_0', best };
 
-  const real = match(/real/);
+  const real = match(/real|human/);
   if (real.length) {
     const realBest = real.reduce((a, b) => (a.score || 0) > (b.score || 0) ? a : b);
     return { aiScore: 1 - (realBest.score || 0), aiLabel: 'not real', best };
@@ -284,7 +320,9 @@ function decideAIScore(predictions) {
 
 function heuristicPredict(text) {
   const t = (text || '').toLowerCase();
-  const phrases = ['as an ai language model','as a language model','i do not have personal','cannot browse the internet','my training data','chatgpt','openai','large language model','in this essay','in conclusion','furthermore','moreover','on the other hand','this article explores','this report discusses'];
+  const phrases = [
+    'as an ai language model','as a language model','i do not have personal','cannot browse the internet','my training data','chatgpt','openai','large language model','in this essay','in conclusion','furthermore','moreover','on the other hand','this article explores','this report discusses'
+  ];
   let hits = 0; for (const p of phrases) if (t.includes(p)) hits += 1;
   const sentences = t.split(/[.!?]+/).map(s => s.trim()).filter(Boolean);
   const words = t.match(/[a-z']+/g) || []; const unique = Array.from(new Set(words));
@@ -310,6 +348,25 @@ function logToStorage(text) {
     chrome.storage.local.get(['logs'], result => {
       const logs = Array.isArray(result?.logs) ? result.logs : []; logs.push(entry);
       chrome.storage.local.set({ logs }, resolve);
+    });
+  });
+}
+
+function logSiteVisit(url, title, detection) {
+  return new Promise(resolve => {
+    const entry = {
+      url: String(url || ''),
+      title: String(title || ''),
+      isAI: !!detection?.isAI,
+      score: typeof detection?.score === 'number' ? detection.score : null,
+      label: detection?.label || '',
+      model: detection?.model || '',
+      date: new Date().toLocaleString()
+    };
+    chrome.storage.local.get(['site_visits'], res => {
+      const visits = Array.isArray(res?.site_visits) ? res.site_visits : [];
+      visits.push(entry);
+      chrome.storage.local.set({ site_visits: visits }, resolve);
     });
   });
 }
